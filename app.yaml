@@ -1,0 +1,272 @@
+
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: service
+
+Parameters:
+  Env:
+    Description: An Env name that will be prefixed to resource names
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+
+  TargetGroup:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Properties:
+      VpcId:
+        Fn::ImportValue: !Sub ${Env}-vpc-VPC
+      Name: !Sub ${Env}-target-group
+      Protocol: HTTP
+      Port: 80
+      TargetType: ip
+
+  InternetALB:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Name: !Sub ${Env}-alb
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-alb
+      Scheme: "internet-facing"
+      LoadBalancerAttributes:
+        - Key: "deletion_protection.enabled"
+          Value: 'false'
+        - Key: "idle_timeout.timeout_seconds"
+          Value: '60'
+        # - Key: "access_logs.s3.enabled"
+        #   Value: true
+        # - Key: "access_logs.s3.bucket"
+        #   Value: !Sub "alb-log-${AWS::AccountId}"
+      SecurityGroups:
+        - !Ref ALBSecurityGroupId
+      Subnets:
+        - Fn::ImportValue: !Sub ${Env}-vpc-PublicSubnet1
+        - Fn::ImportValue: !Sub ${Env}-vpc-PublicSubnet2
+
+  ALBSecurityGroupId:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub ${Env}-alb-security-group
+      VpcId:
+        Fn::ImportValue: !Sub ${Env}-vpc-VPC
+      SecurityGroupIngress:
+        - IpProtocol: "TCP"
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: "all"
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-alb-security-group
+
+  ALBListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref TargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref InternetALB
+      Port: 80
+      Protocol: HTTP
+
+  ECSSecurityGroupId:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub ${Env}-ecs-security-group
+      VpcId:
+        Fn::ImportValue: !Sub ${Env}-vpc-VPC
+      SecurityGroupIngress:
+        - IpProtocol: '-1'
+          FromPort: -1
+          ToPort: -1
+          SourceSecurityGroupId: !Ref ALBSecurityGroupId
+          Description: ALBSecurityGroupId
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-ecs-security-group
+
+  ECSLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Sub "/ecs/logs/${Env}-ecs-group"
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Env}-ECSTaskExecutionRolePolicy
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: '256'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      Family: !Sub ${Env}-app
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ContainerDefinitions:
+        - Name: !Sub ${Env}-app
+          Image: nginx:latest
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: !Ref Env
+          MemoryReservation: 256
+          PortMappings:
+            - HostPort: 80
+              Protocol: tcp
+              ContainerPort: 80
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub ${Env}-cluster-Cluster
+      DesiredCount: 2
+      LaunchType: FARGATE
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup
+          ContainerPort: 80
+          ContainerName: !Sub ${Env}-app
+      NetworkConfiguration:
+       AwsvpcConfiguration:
+           AssignPublicIp: DISABLED
+           SecurityGroups:
+             - !Ref ECSSecurityGroupId
+           Subnets:
+             - Fn::ImportValue: !Sub ${Env}-vpc-PrivateSubnet1
+             - Fn::ImportValue: !Sub ${Env}-vpc-PrivateSubnet2
+      ServiceName: !Sub ${Env}-service
+      TaskDefinition: !Ref ECSTaskDefinition
+
+
+  ServiceAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub "${Env}-app-autoscaling"
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - application-autoscaling:*
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                Resource: '*'
+
+  ServiceScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: 1
+      MaxCapacity: 10
+      ResourceId: !Sub
+        - service/${EcsClusterName}/${Env}-service
+        - EcsClusterName:
+            Fn::ImportValue: !Sub ${Env}-cluster-Cluster
+      RoleARN: !GetAtt ServiceAutoScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+    DependsOn:
+      - ECSService
+
+  ServiceScaleOutPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub "${Env}-service-ScaleOutPolicy"
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - ScalingAdjustment: 1
+            MetricIntervalLowerBound: 0
+
+  ServiceScaleInPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub "${Env}-service-ScaleInPolicy"
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - ScalingAdjustment: -1
+            MetricIntervalUpperBound: 0
+
+  ServiceScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Env}-service-ScaleOutAlarm"
+      EvaluationPeriods: 10
+      Statistic: Average
+      TreatMissingData: notBreaching
+      Threshold: 30
+      AlarmDescription: Alarm to add capacity if CPU is high
+      Period: 60
+      AlarmActions:
+        - !Ref ServiceScaleOutPolicy
+      Namespace: AWS/ECS
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            Fn::ImportValue: !Sub ${Env}-cluster-Cluster
+        - Name: ServiceName
+          Value: !Sub "${Env}-service"
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+    DependsOn:
+      - ECSService
+
+  ServiceScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Env}-service-ScaleInAlarm"
+      EvaluationPeriods: 10
+      Statistic: Average
+      TreatMissingData: notBreaching
+      Threshold: 10
+      AlarmDescription: Alarm to reduce capacity if container CPU is low
+      Period: 300
+      AlarmActions:
+        - !Ref ServiceScaleInPolicy
+      Namespace: AWS/ECS
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            Fn::ImportValue: !Sub ${Env}-cluster-Cluster
+        - Name: ServiceName
+          Value: !Sub "${Env}-service"
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
+    DependsOn:
+      - ECSService

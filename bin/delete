@@ -7,7 +7,6 @@ delete() {
     --stack-name ${ENV}-${1}
 }
 
-delete vpc
+delete app
 delete cluster
-delete task
-delete service
+delete vpc

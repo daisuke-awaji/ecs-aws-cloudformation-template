@@ -12,5 +12,4 @@ deploy() {
 
 deploy vpc
 deploy cluster
-deploy task
-deploy service
+deploy app

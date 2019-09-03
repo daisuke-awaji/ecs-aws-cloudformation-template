@@ -52,7 +52,7 @@ Resources:
               awslogs-group: !Ref ECSLogGroup
               awslogs-region: !Ref "AWS::Region"
               awslogs-stream-prefix: !Ref Env
-          MemoryReservation: 128
+          MemoryReservation: 256
           PortMappings:
             - HostPort: 80
               Protocol: tcp
