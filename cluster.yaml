@@ -1,0 +1,46 @@
+
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: cluster
+
+Parameters:
+  Env:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+
+  #  _____ ____ ____
+  # | ____/ ___/ ___|
+  # |  _|| |   \___ \
+  # | |__| |___ ___) |
+  # |_____\____|____/
+
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: !Sub ${Env}-ecs-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${Env}-app-cluster
+
+Outputs:
+  Cluster:
+    Description: app cluster
+    Value: !Ref Cluster
+    Export:
+      Name: !Sub ${AWS::StackName}-Cluster

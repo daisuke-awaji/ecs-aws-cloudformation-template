@@ -1,0 +1,66 @@
+
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: task
+
+Parameters:
+  Env:
+    Description: An Env name that will be prefixed to resource names
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+
+  ECSLogGroup:
+    Type: "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName: !Sub "/ecs/logs/${Env}-ecs-group"
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Env}-ECSTaskExecutionRolePolicy
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: '256'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      Family: !Sub ${Env}-app
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ContainerDefinitions:
+        - Name: !Sub ${Env}-app
+          Image: nginx:latest
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: !Ref Env
+          MemoryReservation: 128
+          PortMappings:
+            - HostPort: 80
+              Protocol: tcp
+              ContainerPort: 80
+
+Outputs:
+  ECSTaskDefinition:
+    Description: nginx task
+    Value: !Ref ECSTaskDefinition
+    Export:
+      Name: !Sub ${AWS::StackName}-ECSTaskDefinition

@@ -1,0 +1,16 @@
+#!/bin/bash
+
+ENV=$1
+
+deploy() {
+  aws cloudformation deploy \
+    --template-file ${1}.yaml \
+    --stack-name ${ENV}-${1} \
+    --parameter-overrides Env=${ENV} \
+    --capabilities CAPABILITY_NAMED_IAM
+}
+
+deploy vpc
+deploy cluster
+deploy task
+deploy service

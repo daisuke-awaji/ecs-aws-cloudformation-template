@@ -1,0 +1,13 @@
+#!/bin/bash
+
+ENV=$1
+
+delete() {
+  aws cloudformation delete-stack \
+    --stack-name ${ENV}-${1}
+}
+
+delete vpc
+delete cluster
+delete task
+delete service
